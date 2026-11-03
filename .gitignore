@@ -3,7 +3,12 @@
 
 # Analysis output (large, regenerable)
 extracted/
+decrypted/
+decompiled/
 snapshots/
+
+# Logs
+*.log
 
 # Tooling noise
 __pycache__/

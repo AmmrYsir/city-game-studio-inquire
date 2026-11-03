@@ -1,90 +1,87 @@
-# Technical Notes — City Game Studio reverse engineering
+# Reverse-engineering technical notes — City Game Studio
 
-## Target identification
+## Target
 
-- `CityGameStudio64.exe` — custom-built Godot 2.1 (x64) engine runtime. Not the
-  interesting target by itself.
-- `data.pck` — ~376 MB Godot resource pack containing everything: scripts, scenes,
-  textures, data tables, fonts, audio.
+- Engine: Godot 2.1 custom build (x64). Main data in `data.pck` (~376 MB, 6869 files).
+- `.exe` is just the engine runtime; all game logic is GDScript inside the pack.
 
-## PCK format (legacy Godot 2.x, "format 0")
-
-Confirmed by direct parsing:
+## PCK format (legacy "format 0")
 
 ```
-offset 0x00:  magic "GDPC"            (4 bytes)
-offset 0x04:  u32 format version = 0  (pack version field, little-endian)
-offset 0x05:  u16 godot major = 2
-offset 0x07:  u16 godot minor = ...
-offset 0x54:  u32 entry count
-then, per entry (repeated entry-count times):
-    u32  pathLength
-    char path[pathLength]          # e.g. "res://data/score.gde"
-    u64  offset                    # absolute offset of file data in the pack
-    u64  size                      # uncompressed size
-    16 bytes digest                # MD5 of the file data
-...file data blobs...
-last 4 bytes: magic "GDPC" (trailing magic, as in Godot 2.x)
+0x00 'GDPC'  0x04 u32 version=0 ... 0x54 u32 entry_count
+entry: u32 pathLen, path bytes, u64 offset, u64 size, 16B md5
+data blobs follow; trailing 'GDPC' magic at EOF.
 ```
 
-`rea inspect-artifact` rejects this as "Godot PCK format 0" (it supports only the
-newer plain formats 2/3/4), so extraction is done by `tools/pck_extract.py` which
-implements the layout above.
+Extractor: `tools/pck_extract.py`.
 
-## Script encryption (`.gde`)
+## Script encryption (.gde)
+
+Header (32 bytes): `'GDEC'`, u32 mode(=1), 16-byte MD5-of-plaintext, u64 plaintext
+length. Then AES-256-**ECB** (no IV; Godot 2.x `FileAccessEncrypted`), zero-padded
+to 16-byte blocks. Plaintext = GDSC bytecode. Integrity = MD5 check.
+
+### Key recovery
+
+The engine stores the 32-byte key as a static array in `.data`. Recovered with a
+sliding-window search: for each 32-byte window in the exe, decrypt the first
+ciphertext block of `data/score.gde` and test for `GDSC` magic.
+
+**Recovered key (ASCII password):** `McQfTjWnZr4u7x!A%D*G-JaNdRgUkXp2`
+(exe file offset `0xf47010`; offset is build-specific, re-run `tools/find_key.py`
+for other builds). Note the ECB oracle in the first version of `find_key.py`
+(CFB with IV) was wrong — the current file implements ECB.
+
+Decryptor: `tools/gde_decrypt.py` (all 907 scripts verify via MD5).
+
+## GDSC bytecode (Godot 2.1, BYTECODE_VERSION=10)
+
+Ported from `gd_tokenizer.cpp GDTokenizerBuffer::set_code_buffer`:
 
 ```
-offset 0:  magic "GDEC"   (4 bytes)
-offset 4:  u32 version = 1
-offset 8:  16 bytes digest
-offset 24: AES-256-CFB encrypted GDC bytecode (rest of file)
+0x00 'GDSC'  u32 version(=10)  u32 ident_count  u32 const_count
+u32 line_count  u32 token_count  → payload at 0x18
+identifiers: u32 len + bytes^0xb6 (last byte forced 0), no alignment padding
+constants: binary Variants (type word: low16=type, high16=flags; int64/float64
+           flags=1; strings len-prefixed, 4-byte aligned)
+line table: line_count × (u32 token_index, u32 packed line/column)
+tokens: 1 byte each; if byte & 0x80 → u32 & ~0x80
+token value: base type in low 8 bits, payload in high 24 (identifier index,
+constant index, builtin-func id, type id, or newline indent)
 ```
 
-Godot 2.x script encryption works like this: the engine contains a 32-byte AES-256
-key; encrypted scripts are AES-256-CFB encrypted compiled GDScript (`.gdc` bytecode).
-Stock engine builds embed a well-known default key; custom builds rotate it. First
-attempt: the public default key. Verification: successful decryption must yield a
-valid GDC payload starting with `GDSC` (compiled GDScript magic) or parseable GDC
-bytecode headers.
+- Base-token enum: `TK_IDENTIFIER=1, TK_CONSTANT=2, TK_SELF=3, TK_BUILT_IN_TYPE=4,
+  TK_BUILT_IN_FUNC=5, ...` (full list in `tools/gdc_disasm.py`, from gd_tokenizer.h).
+- Built-in function table = `gd_functions.h` enum order (MATH_SIN … INSTANCE_FROM_ID).
 
-If the default key fails, the key can be recovered from `CityGameStudio64.exe`:
-search the `.data`/`.rdata` section for 32-byte high-entropy constants referenced
-near AES key-schedule setup, or diff against a stock Godot 2.1.6 build.
+Tools: `tools/gdc_disasm.py` (token dump), `tools/gdc_decompile.py`
+(token stream → GDScript-ish source using the line table for indentation).
+All 907 scripts round-trip (parser consumes exactly the file length).
 
-## GDC bytecode (compiled GDScript, Godot 2.1)
-
-Decompiling options once decrypted:
-
-- Adapt a Godot 2.x GDC parser (the bytecode format is documented in
-  godot-source `modules/gdscript/gd_script_tokenizer.cpp` —
-  `GDScriptTokenizerBuffer` / `gdscript_byte_codegen`).
-- The bytecode is a stack-machine format with a fixed opcode table per engine
-  version; strings/constants/identifiers are stored in tables at the top of the
-  file, making formulas recoverable even from a disassembly listing.
+Caveats of the quick decompiler: no operator-precedence reconstruction (prints
+tokens with spaces), no block-structure inference beyond newline indents, and a
+few clamp-style helpers are called with the game's own argument order. Semantics
+are exact though — it's the literal token stream.
 
 ## rea tooling notes
 
-- `rea inspect <exe>`: fails — no native analysis providers configured on this
-  machine (Ghidra, IDA, Kuna absent; Hopper not supported on Windows).
-- `rea inspect-artifact <data.pck>`: fails — PCK format 0 unsupported.
-- Usable rea commands for this target: `rea search` (strings/names in the exe),
-  `rea inspect-pe-imports`, `rea inspect-pe-resources` on the exe if needed for
-  key recovery.
-- General fallback: python scripts in `tools/` (pack parsing, AES decryption via
-  `cryptography`/`pycryptodome`).
+- `rea inspect` on the exe: no native provider configured (Ghidra/IDA absent) —
+  wasn't needed; pure-python analysis sufficed.
+- `rea inspect-artifact data.pck`: rejects PCK format 0 (supports only 2/3/4).
 
-## Data files of interest (from pack index)
+## Key game-logic files (decompiled)
 
-- `res://data/*.gde` — score, review, game, concurrent-game, event-game logic.
-- `res://scripts/models/*.gde` — data models.
-- `res://scripts/game/reviews/*.gde` — review UI/logic.
-- `res://scripts/game/release/released-game.gde` — release/sales logic.
-- `res://scripts/json/schema/*.gde` — JSON schemas (mod-loading related).
-- `.pbm` files (285) — likely data tables (portable bitmap or custom format; TBD).
-- `.xl` files (17) — possibly spreadsheet-like data tables; TBD.
-- 5 `.cfg` files — plaintext; addon/plugin configs (already readable).
+- `scripts/controllers/game.gd` — scoring pipeline (compute_notation etc.)
+- `scripts/controllers/game-sales.gd` — monthly sales/fanbase/income
+- `scripts/controllers/gameport.gd`, `remake.gd`, `game-update.gd` — ports/remakes/DLC
+- `data/game.gd` — size table; `data/score.gd` — point-cost table
+- `data/game-type.gd`, `data/game-theme.gd`, `data/game-platform.gd`,
+  `data/game-engine.gd` — genre/theme/platform/engine data tables
+- `scripts/utils/match-utils.gd` — theme/genre/platform match ratio math
+- Difficulty data via `models/player.gd get_difficulty_data()` (data/player.gd)
 
-## Environment notes
+## Environment
 
-- Windows, Git Bash, python 3 available with struct/stdlib; AES needs
-  `cryptography` or `pycryptodome` (check availability before relying on it).
+- Windows, Git Bash, python 3 + pycryptodome (installed for this project).
+- Workspace layout: `extracted/` (raw pack files), `decrypted/` (.gdc),
+  `decompiled/` (.gd) — all git-ignored; docs and tools are committed.
