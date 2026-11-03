@@ -1,0 +1,10 @@
+# Machine-local / private
+.local/
+
+# Analysis output (large, regenerable)
+extracted/
+snapshots/
+
+# Tooling noise
+__pycache__/
+*.pyc
