@@ -1,61 +1,67 @@
 #!/usr/bin/env python3
-"""Generate docs/player-guide.html — a friendly gamer-facing guide."""
+"""One-time full rebuild of docs/player-guide.html with ALL data inlined.
+After this runs, the HTML is the source of truth — edit it directly."""
 import json
 
 gt = json.load(open("extracted/game-type.json"))
+pl = json.load(open("extracted/game-platform.json"))["list"]
 
-# ---- build simple genre table data -------------------------------------
-DESIGN = ["gameplay", "story", "characters", "graphism", "userinterface"]
-DEV = ["physics", "ai", "sound", "network", "modding"]
-POLISH = ["animation", "artwork", "cutscenes", "optimization", "tutoriel"]
-STEPS = [("Design", DESIGN), ("Development", DEV), ("Polish", POLISH)]
+def pretty(s):
+    return s.replace("-", " ").title()
 
-# genre display name: prettify
-def pretty(name):
-    return name.replace("-", " ").title()
+# ---------- genre matrix (all 15 capacities) ----------
+STEPS = [("design", "Design"), ("development", "Development"), ("polish", "Polish")]
+cap_keys = {}
+for s, _ in STEPS:
+    keys = []
+    for g in gt.values():
+        for k in g.get(s, {}):
+            if k not in keys: keys.append(k)
+    cap_keys[s] = keys
 
-# For each genre find its TOP 3 capacities overall (the "spend most here" hint)
-tops = {}
+mhead = '<th class="rot"><div>Genre</div></th>'
+for s, label in STEPS:
+    mhead += f'<th class="grp" colspan="{len(cap_keys[s])}">{label}</th>'
+mhead2 = "<th>Genre</th>" + "".join(
+    f'<th class="rot"><div>{pretty(k)}</div></th>' for s, _ in STEPS for k in cap_keys[s])
+
+mrows = []
 for gname, g in gt.items():
-    all_caps = []
-    for s in ("design", "development", "polish"):
-        for k, v in g.get(s, {}).items():
-            all_caps.append((k, v))
-    all_caps.sort(key=lambda x: -x[1])
-    tops[gname] = all_caps[:3]
+    cells = ""
+    for s, _ in STEPS:
+        for k in cap_keys[s]:
+            v = g.get(s, {}).get(k)
+            if v is None:
+                cells += '<td class="dim">–</td>'
+            else:
+                cells += f'<td><span class="hv" style="--v:{min(100,int(v))}">{v}</span></td>'
+    mrows.append(f'<tr><th>{pretty(gname)}</th>{cells}</tr>')
+genre_matrix = f"<thead><tr>{mhead}</tr><tr>{mhead2}</tr></thead><tbody>" + "\n".join(mrows) + "</tbody>"
 
-rows = []
-for gname, g in gt.items():
-    t3 = tops[gname]
-    chips = "".join(
-        f'<span class="cap">{pretty(k)} <b>{v}</b></span>' for k, v in t3
-    )
-    cost = g.get("cost", "?")
-    rows.append(f'<tr><th>{pretty(gname)}</th><td>{chips}</td><td class="num">{cost}</td></tr>')
-genre_rows = "\n".join(rows)
+# ---------- platform table (ALL 88) ----------
+GRADE = {"excellent": "E", "good": "G", "ok": "O", "poor": "P"}
+TYPE_LABEL = {"home": "🏠 Home", "handled": "🎒 Handheld", "pc": "🖥 PC", "os": "💻 OS", "accessory": "🔌 Accessory"}
 
-# build platform/audience tables from game-platform.json
-pl_raw = json.load(open("extracted/game-platform.json"))["list"]
-aud_rows = []
-for aud, label, desc in [
-    ("young", "👶 Young", "Kid-friendly / family audiences"),
-    ("all", "👨‍👩‍👧 All", "General audiences"),
-    ("mature", "🔞 Mature", "Adult / violent themes"),
-]:
-    ex = sorted(p["name"] for p in pl_raw.values() if aud in (p.get("match", {}).get("excellent") or []))
-    po = sorted(p["name"] for p in pl_raw.values() if aud in (p.get("match", {}).get("poor") or []))
-    ex_html = " ".join(f'<span class="cap good2">{n}</span>' for n in ex[:12]) + (
-        f' <span class="dim">+{len(ex)-12} more</span>' if len(ex) > 12 else "")
-    po_html = " ".join(f'<span class="cap bad2">{n}</span>' for n in po[:12]) + (
-        f' <span class="dim">+{len(po)-12} more</span>' if len(po) > 12 else "")
-    aud_rows.append(
-        f'<tr><th>{label}<br><span class="dim" style="font-weight:400">{desc}</span></th>'
-        f'<td>{ex_html or "—"}</td><td>{po_html or "—"}</td></tr>')
-audience_rows = "\n".join(aud_rows)
-
-# console-families quick reference: best platforms for mature vs young
-handhelds_love_young = sorted(p["name"] for p in pl_raw.values()
-                              if p.get("type") == "handled" and "young" in (p.get("match", {}).get("excellent") or []))[:8]
+prows = []
+for pid, p in sorted(pl.items(), key=lambda kv: (kv[1].get("generation", 0), kv[0])):
+    m = p.get("match", {})
+    def cell(aud):
+        for grade in ("excellent", "good", "ok", "poor"):
+            if aud in (m.get(grade) or []):
+                return f'<span class="g {grade[0]}">{GRADE[grade]}</span>'
+        return '<span class="dim">·</span>'
+    online = "🌐" if p.get("online", {}).get("compatible") else "—"
+    prot = "✔" if p.get("copy_protection") else '<span class="dim">✘</span>'
+    lic = p.get("cost", {}).get("license", "?")
+    prows.append(
+        f'<tr><th>{p["name"]}</th><td class="num">{p.get("generation","?")}</td>'
+        f'<td>{TYPE_LABEL.get(p.get("type"), p.get("type"))}</td>'
+        f'<td class="ctr">{online}</td><td class="ctr">{prot}</td>'
+        f'<td class="num">{lic:,}</td>'
+        f'<td class="ctr">{cell("young")}</td><td class="ctr">{cell("all")}</td><td class="ctr">{cell("mature")}</td></tr>')
+platform_table = ("<thead><tr><th>Platform</th><th class='num'>Gen</th><th>Type</th><th>Online</th>"
+                  "<th>Anti-piracy</th><th class='num'>License</th><th>👶 Young</th><th>👨‍👩‍👧 All</th>"
+                  "<th>🔞 Mature</th></tr></thead><tbody>" + "\n".join(prows) + "</tbody>")
 
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -66,302 +72,204 @@ HTML = r"""<!DOCTYPE html>
 :root{
   --bg:#12182b; --panel:#1a2338; --panel2:#202b45; --ink:#e6ecfa; --dim:#93a3c4;
   --accent:#ffc94d; --accent2:#4fc3f7; --good:#57d08b; --warn:#ffb35c; --bad:#ff7b7b;
-  --line:#2c3document:0;
+  --line:#2c3a5e;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 "Segoe UI",system-ui,sans-serif}
-.wrap{max-width:960px;margin:0 auto;padding:36px 20px 90px}
+.wrap{max-width:1000px;margin:0 auto;padding:36px 20px 90px}
 header{text-align:center;margin-bottom:34px}
 h1{font-size:34px;margin:0 0 8px;color:#fff}
-h1 .emoji{font-size:40px}
 header p{color:var(--dim);font-size:17px;max-width:640px;margin:0 auto}
 h2{display:flex;align-items:center;gap:12px;font-size:24px;color:var(--accent);margin:52px 0 14px}
 h2 .num{background:var(--accent);color:#1a2338;width:36px;height:36px;border-radius:12px;
         display:inline-flex;align-items:center;justify-content:center;font-size:18px;flex:0 0 auto}
 h3{font-size:18px;color:var(--accent2);margin:26px 0 8px}
-p{margin:10px 0}
 .dim{color:var(--dim)}
-.tip{background:var(--panel);border-left:5px solid var(--accent);border-radius:0 12px 12px 0;
-     padding:14px 18px;margin:14px 0}
-.tip b{color:var(--accent)}
-.warnbox{background:#33261a;border-left:5px solid var(--warn);border-radius:0 12px 12px 0;
-     padding:14px 18px;margin:14px 0}
-.goodbox{background:#1a3327;border-left:5px solid var(--good);border-radius:0 12px 12px 0;
-     padding:14px 18px;margin:14px 0}
-.badbox{background:#331d1d;border-left:5px solid var(--bad);border-radius:0 12px 12px 0;
-     padding:14px 18px;margin:14px 0}
-table{border-collapse:collapse;width:100%;margin:16px 0;font-size:14.5px;background:var(--panel);border-radius:12px;overflow:hidden}
-th,td{border-bottom:1px solid #26324f;padding:10px 12px;text-align:left}
-thead th{background:var(--panel2);color:var(--accent2);font-size:14px}
+.tip{background:var(--panel);border-left:5px solid var(--accent);border-radius:0 12px 12px 0;padding:14px 18px;margin:14px 0}
+.warnbox{background:#33261a;border-left:5px solid var(--warn);border-radius:0 12px 12px 0;padding:14px 18px;margin:14px 0}
+.goodbox{background:#1a3327;border-left:5px solid var(--good);border-radius:0 12px 12px 0;padding:14px 18px;margin:14px 0}
+.badbox{background:#331d1d;border-left:5px solid var(--bad);border-radius:0 12px 12px 0;padding:14px 18px;margin:14px 0}
+table{border-collapse:collapse;width:100%;margin:16px 0;font-size:14px;background:var(--panel)}
+th,td{border-bottom:1px solid #26324f;padding:8px 10px;text-align:left}
+thead th{background:var(--panel2);color:var(--accent2);font-size:13.5px}
 tbody th{color:#fff;white-space:nowrap}
 tbody tr:hover{background:#233052}
 .num{text-align:right;font-variant-numeric:tabular-nums}
-.cap{display:inline-block;background:#24365c;color:#bcd8ff;border-radius:16px;
-     padding:2px 10px;margin:2px;font-size:13px}
+.ctr{text-align:center}
+.cap{display:inline-block;background:#24365c;color:#bcd8ff;border-radius:16px;padding:2px 10px;margin:2px;font-size:13px}
 .cap b{color:#fff}
-.good2{background:#1a4a2e;color:#8ff0b6}
-.bad2{background:#4a2222;color:#ff9d9d}
-.bars{margin:6px 0}
-.bar-row{display:flex;align-items:center;gap:10px;margin:5px 0}
-.bar-row .lbl{width:130px;flex:0 0 auto;font-size:14px}
-.bar-row .bar{height:16px;border-radius:8px;background:linear-gradient(90deg,#3f8fd8,#7fe0ae);min-width:4px}
-.bar-row .val{font-size:13px;color:var(--dim)}
-.steps{counter-reset:step;margin:18px 0}
-.step{background:var(--panel);border:1px solid #2a3document;border-radius:14px;padding:16px 20px;margin:12px 0;display:flex;gap:16px;align-items:flex-start}
+.g{display:inline-block;width:22px;height:22px;line-height:22px;border-radius:6px;font-weight:800;font-size:12px;color:#fff}
+.g.e{background:#1a6a3e}.g.g{background:#245e8a}.g.o{background:#6b5a20}.g.p{background:#7a2e2e}
+.step{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin:12px 0;display:flex;gap:16px;align-items:flex-start}
 .step .icon{font-size:30px;flex:0 0 auto;margin-top:2px}
 .step h3{margin:0 0 6px}
-.size-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:16px 0}
-.size-card{background:var(--panel);border-radius:14px;padding:18px;border-top:5px solid var(--accent2)}
-.size-card h3{margin:0 0 8px;color:#fff}
-.size-card .big{font-size:26px;font-weight:800;color:var(--accent)}
-.size-card ul{margin:8px 0 0;padding-left:18px;color:var(--dim);font-size:13.5px}
+.bar-row{display:flex;align-items:center;gap:10px;margin:5px 0}
+.bar-row .lbl{width:130px;flex:0 0 auto;font-size:14px}
+.bar-row .bar{height:16px;border-radius:8px;background:linear-gradient(90deg,#3f8fd8,#7fe0ae)}
+.bar-row .val{font-size:13px;color:var(--dim)}
+/* matrix */
+.matrixwrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px}
+table.matrix{font-size:11px;margin:0;background:var(--panel)}
+.matrix td,.matrix th{padding:3px 6px;text-align:center;border-right:1px solid #202b45}
+.matrix tbody th{text-align:left}
+.matrix .grp{text-align:center;background:#16223c;color:var(--accent2);border-bottom:1px solid var(--line)}
+.hv{display:inline-block;min-width:30px;padding:2px 3px;border-radius:4px;color:#eaf4ff;
+    background:rgb(42,111,181);opacity:calc(0.15 + var(--v)*0.0085)}
+.rot{height:88px;white-space:nowrap}
+.rot div{transform:rotate(-55deg) translate(6px,-2px);transform-origin:bottom left;width:14px}
+.search{width:100%;padding:10px 16px;border-radius:10px;border:1px solid var(--line);background:#0e1526;color:#fff;font-size:15px;margin:10px 0}
 footer{margin-top:70px;text-align:center;color:var(--dim);font-size:13px;border-top:1px solid #2a3650;padding-top:16px}
-.search{width:100%;padding:10px 16px;border-radius:10px;border:1px solid #2c3a5e;background:#0e1526;
-        color:#fff;font-size:15px;margin:10px 0}
 </style>
 </head>
 <body><div class="wrap">
 
 <header>
-<h1><span class="emoji">🎮</span> City Game Studio<br>Player's Guide to Great Scores &amp; Big Sales</h1>
-<p>Everything below is read straight from the game's own code — no guessing, no myths.
-Here's how the game actually decides your review scores and sales.</p>
+<h1>🎮 City Game Studio<br>Player's Guide to Great Scores &amp; Big Sales</h1>
+<p>Everything here is read straight from the game's own code — no guessing, no myths.</p>
 </header>
 
 <h2><span class="num">1</span>How your review score is decided</h2>
-<p>When your game ships, 4 game magazines each review it. Their score comes from
-four things — in order of importance:</p>
+<p>When your game ships, 4 magazines review it. Their score comes from four things:</p>
 
-<div class="steps">
-
-<div class="step"><div class="icon">🎯</div><div>
-<h3>Pick the RIGHT genre (biggest factor)</h3>
-<p>The game checks <b>what kind of game you promised</b> (genre) against
-<b>the platform, the theme and the audience</b> you picked. Each pairing gets a grade:</p>
-<p>
-<span class="cap" style="background:#1a4a2e;color:#8ff0b6">Excellent = ×1.10</span>
-<span class="cap" style="background:#1c3a52;color:#8fd0f0">Good = ×1.05</span>
-<span class="cap" style="background:#3a3220;color:#ffd479">OK = ×1.00</span>
-<span class="cap" style="background:#4a2222;color:#ff9d9d">Poor = ×0.85</span>
-</p>
-<p class="dim">Three of these grades multiply together, so one "Poor" pairing can quietly
-cost you 15% of your final score. The game shows you match tips while you pick — trust them.</p>
+<div class="step"><div class="icon">🎯</div><div><h3>Pick the RIGHT genre + platform + audience</h3>
+<p>The game grades three pairings and multiplies them:
+<span class="cap" style="background:#1a4a2e;color:#8ff0b6">Excellent ×1.10</span>
+<span class="cap" style="background:#1c3a52;color:#8fd0f0">Good ×1.05</span>
+<span class="cap" style="background:#3a3220;color:#ffd479">OK ×1.00</span>
+<span class="cap" style="background:#4a2222;color:#ff9d9d">Poor ×0.85</span></p>
+<p class="dim">genre↔platform · theme↔genre · platform↔target audience. One "Poor" quietly costs 15% of your score. The in-game match tips are real coded data — trust them.</p>
 </div></div>
 
-<div class="step"><div class="icon">⚖️</div><div>
-<h3>Balance your capacity sliders (the hidden test)</h3>
-<p>Every genre has a <b>secret "shopping list"</b> of how much Gameplay, Story, Sound,
-AI etc. it expects — see the table in section 2. The game doesn't just count your total
-points: it checks whether you spent them <b>in the proportions the genre wants</b>.</p>
-<div class="goodbox">✅ <b>Match the proportions</b> → full marks (each of the 3 dev phases is worth up to 28 points, 84 total).</div>
-<div class="badbox">❌ Way over-invest in one area or starve another → up to <b>half your capacity score</b> can be lost, and reviewers will literally complain "too much X" / "not enough X".</div>
-</div></div>
+<div class="step"><div class="icon">⚖️</div><div><h3>Balance your capacity sliders</h3>
+<p>Every genre has a secret "shopping list" (section 2). Reviewers grade the
+<b>proportions</b> of your spending, not the total. Matching proportions = full marks
+(28 points × 3 phases). Lopsided allocation can cost <b>half</b> the capacity score and
+triggers "too much X" / "not enough X" complaints.</p></div></div>
 
-<div class="step"><div class="icon">⏱️</div><div>
-<h3>Don't drag development on too long</h3>
-<p>Dev time is worth up to <b>20 points</b> — but only if you finish inside the
-"expected weeks" window for your game size. Every extra week past the maximum
-<b>steals points back</b>. Speed matters, but rushing below the minimum also scores poorly.</p>
-<table><thead><tr><th>Size</th><th>Healthy dev time</th></tr></thead><tbody>
-<tr><th>Indie</th><td>12–24 weeks</td></tr>
-<tr><th>Normal</th><td>24–56 weeks</td></tr>
-<tr><th>Big</th><td>48–96 weeks</td></tr>
-<tr><th>AAA</th><td>72–144 weeks</td></tr>
-</tbody></table>
-</div></div>
+<div class="step"><div class="icon">⏱️</div><div><h3>Ship on time</h3>
+<p>Dev time is worth up to 20 points, only inside the healthy window.
+Indie 12–24 wks · Normal 24–56 · Big 48–96 · AAA 72–144. Every week past the max
+steals points back.</p></div></div>
 
-<div class="step"><div class="icon">🔁</div><div>
-<h3>Don't repeat yourself</h3>
-<p>Making the <b>same theme + genre combo</b> again too soon gets a "seen it before" penalty —
-up to <b>−25%</b> off your score. Wait roughly <b>6–12 months</b> (depending on difficulty)
-between sequels of the exact same combo, or mix in a different theme.</p>
-</div></div>
+<div class="step"><div class="icon">🔁</div><div><h3>Don't repeat yourself</h3>
+<p>Same theme+genre combo within ~6–12 months = up to −25% score.</p></div></div>
 
+<div class="tip">💡 <b>Score caps:</b> Indie max <b>85</b> · Normal 90 · Big 95 · AAA 100.
+A bloated engine lowers the cap further.</div>
+
+<h2><span class="num">2</span>What each genre wants — full matrix</h2>
+<p>Numbers = expected points per capacity. <b>Match the ratios between columns</b>;
+darker = more expected. "–" = the genre doesn't use that capacity at all, so any
+points spent there are wasted (and hurt your proportion score).</p>
+<input class="search" id="gsearch" type="text" placeholder="🔍 Filter genres… (e.g. rpg, racing, strategy)" oninput="filterTable('gsearch','genretable')">
+<div class="matrixwrap">
+<table class="matrix" id="genretable">
+__GENRE_MATRIX__
+</table>
 </div>
 
-<div class="tip">💡 <b>Score caps:</b> Indie games can never score above <b>85</b>,
-Normal 90, Big 95, AAA 100. And a bloated custom engine can lower even that cap —
-keep your engine lean for the platform.</div>
+<h2><span class="num">3</span>Pricing — the sweet spot is bigger than you think</h2>
 
-<h2><span class="num">2</span>What each genre wants (the secret shopping list)</h2>
-<p>These are the <b>top 3 capacities each genre expects you to invest in most</b>
-(numbers = expected points). Put your biggest sliders here and keep the rest in
-rough proportion — that's what the reviewers are grading.</p>
-<p class="dim">Cost = research points to unlock the genre.</p>
-<input class="search" id="gsearch" type="text" placeholder="🔍 Type to filter genres… (e.g. rpg, strategy, simulation)" oninput="filterRows()">
-<table id="genretable">
-<thead><tr><th>Genre</th><th>Top 3 capacities to invest in</th><th class="num">Unlock cost</th></tr></thead>
+<div class="step"><div class="icon">🏷️</div><div>
+<h3>How price actually affects sales</h3>
+<p>The game compares your price to your size's <b>max</b> price:</p>
+<ul>
+<li><b>At or below max price</b> → volume ratio ≈ <span class="mono">max_price / your_price</span>.
+Halving the price roughly <b>doubles</b> copies sold.</li>
+<li><b>Above max price</b> → a penalty kicks in: <span class="mono">malus × limit / price</span>.
+The malus (0.5–0.8) is brutal — pricing AAA at 150 instead of 120 costs you ~35% volume.</li>
+<li><b>Recommendation:</b> price at the size's <b>average</b> — near-max revenue
+without the malus. Only go below average for fanbase farming or when a game underperformed.</li>
+</ul>
+</div></div>
+
+<table>
+<thead><tr><th>Size</th><th class="num">Average price</th><th class="num">Max price</th><th class="num">Hard limit</th><th class="num">Overprice penalty (malus)</th></tr></thead>
 <tbody>
-__GENRE_ROWS__
+<tr><th>🕹️ Indie</th><td class="num">10</td><td class="num">15</td><td class="num">20</td><td class="num">0.5 (harshest)</td></tr>
+<tr><th>💿 Normal</th><td class="num">20</td><td class="num">35</td><td class="num">50</td><td class="num">0.6</td></tr>
+<tr><th>📦 Big</th><td class="num">40</td><td class="num">60</td><td class="num">80</td><td class="num">0.7</td></tr>
+<tr><th>🏆 AAA</th><td class="num">60</td><td class="num">80</td><td class="num">120</td><td class="num">0.8</td></tr>
 </tbody></table>
+<div class="tip">💡 Discounts multiply volume up to ×10 at −90% off, and sales momentum
+(sales index) slightly damps further discounts — timing a sale late in a game's life
+gives it a strong second wind.</div>
 
-<h2><span class="num">3</span>The four game sizes</h2>
-<div class="size-grid">
-<div class="size-card"><h3>🕹️ Indie</h3><div class="big">Max 85</div><ul>
-<li>1 person, no producer needed</li><li>1 000 fans to unlock</li>
-<li>Sells up to 100 000 copies</li><li>Price ~10, can push to 20</li>
-<li>3–6 months dev time</li></ul></div>
-<div class="size-card"><h3>💿 Normal</h3><div class="big">Max 90</div><ul>
-<li>5 staff</li><li>10 000 fans</li><li>500 000 copies</li>
-<li>Price ~20, up to 50</li><li>6–14 months</li></ul></div>
-<div class="size-card"><h3>📦 Big</h3><div class="big">Max 95</div><ul>
-<li>25 staff + a producer</li><li>50 000 fans</li><li>2.5M copies</li>
-<li>Price ~40, up to 80</li><li>12–24 months</li></ul></div>
-<div class="size-card"><h3>🏆 AAA</h3><div class="big">Max 100</div><ul>
-<li>100 staff + a producer</li><li>100 000 fans</li><li>10M copies</li>
-<li>Price ~60, up to 120</li><li>18–36 months</li></ul></div>
-</div>
-<p class="dim">Marketing campaigns scale the same way — "Full campaign" costs 350k for indie
-but 5M for AAA, and multiplies your launch hype by ×3.8 vs the free campaign's ×1.05.</p>
+<h2><span class="num">4</span>Marketing &amp; hype</h2>
 
-<h2><span class="num">4</span>How monthly sales actually work</h2>
+<div class="step"><div class="icon">📣</div><div>
+<h3>Where hype comes from</h3>
+<ul>
+<li><b>Marketing campaigns</b> (run during the window before release): the campaign's
+<b>ratio multiplies your last month's unit sales into extra launch hype</b>.</li>
+<li><b>Publisher / announcement hype</b>: self-published games start at 0.5 hype ratio;
+using a publisher or a good announcement pushes it up to 4×.</li>
+<li><b>Events &amp; conventions</b> add a static bonus, and your last month's sales add
+proportional hype.</li>
+<li>A hired <b>Marketing Manager</b> multiplies all of it by their bonus.</li>
+</ul>
+</div></div>
 
-<div class="step"><div class="icon">📊</div><div>
-<h3>Your review score is sales dynamite</h3>
-<p>Sales don't grow linearly with the score — they explode. The game raises your
-score to a huge power (7.5 for indie, up to 14 for AAA). Practically:</p>
-<div class="bar-row"><div class="lbl">Score 60</div><div class="bar" style="width:6%"></div><div class="val">weak sales</div></div>
+<table>
+<thead><tr><th>Campaign</th><th class="num">Hype ratio</th><th class="num">Indie cost</th><th class="num">Normal</th><th class="num">Big</th><th class="num">AAA</th><th class="num">Duration (wks)</th></tr></thead>
+<tbody>
+<tr><th>Free (no cost)</th><td class="num">×1.05</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">12</td></tr>
+<tr><th>Demo</th><td class="num">×1.9</td><td class="num">50 000</td><td class="num">125 000</td><td class="num">250 000</td><td class="num">500 000</td><td class="num">16</td></tr>
+<tr><th>Full</th><td class="num">×3.8</td><td class="num">350 000</td><td class="num">900 000</td><td class="num">2 000 000</td><td class="num">5 000 000</td><td class="num">32–64</td></tr>
+</tbody></table>
+<div class="warnbox">⚠️ Hype is <b>capped by the platform's size</b> — pumping millions into
+a Full campaign for an indie game on a tiny platform wastes money. Match the campaign to
+the platform's userbase.</div>
+
+<h2><span class="num">5</span>Sales month by month</h2>
+<div class="step"><div class="icon">📊</div><div><h3>Review score is sales dynamite</h3>
+<p>The score is raised to a huge power (7.5 indie … 14 AAA):</p>
+<div class="bar-row"><div class="lbl">Score 60</div><div class="bar" style="width:6%"></div><div class="val">weak</div></div>
 <div class="bar-row"><div class="lbl">Score 75</div><div class="bar" style="width:22%"></div><div class="val">decent</div></div>
 <div class="bar-row"><div class="lbl">Score 85</div><div class="bar" style="width:55%"></div><div class="val">strong</div></div>
 <div class="bar-row"><div class="lbl">Score 95</div><div class="bar" style="width:95%"></div><div class="val">blockbuster</div></div>
-<p class="dim">(indie example; the gap gets even wider on bigger sizes)</p>
 </div></div>
+<div class="step"><div class="icon">👥</div><div><h3>Fanbase + freshness = units</h3>
+<p>You sell a share of the platform's userbase, split with every other game released
+there. Fanbase adds direct sales; both fade as months pass. Games scoring below the
+fans' expectation <b>lose fans monthly</b> instead.</p></div></div>
+<div class="step"><div class="icon">😱</div><div><h3>Bad things</h3>
+<ul><li><b>Piracy</b>: cracked games sell ⅓ (retro platforms lack protection).</li>
+<li><b>Engine royalties</b> if using someone else's engine; <b>publisher royalties</b> if not self-published.</li>
+<li><b>Taxes</b> monthly — an accountant employee reduces them.</li></ul></div></div>
 
-<div class="step"><div class="icon">👥</div><div>
-<h3>Fanbase + freshness = units</h3>
-<p>Each month you sell a slice of the platform's player base, shared with every
-other game released there. Your fanbase adds direct sales, but divided by how many
-months you've been out — sales <b>peak early and fade</b>. Fresh platform launches
-and updates give a cycle boost.</p>
-</div></div>
+<h2><span class="num">6</span>Platforms &amp; consoles — full reference</h2>
 
-<div class="step"><div class="icon">🏷️</div><div>
-<h3>Price sweet spot</h3>
-<p>Each size has an <b>average</b> and a <b>max</b> price. Pricing near the average
-gives you a healthy volume bonus; pricing <b>above max</b> triggers a penalty that
-slashes volume. Cheap games sell more copies — but discounts also reduce fan gain.</p>
-</div></div>
+<div class="warnbox">⚠️ Platforms are <b>not</b> genre-neutral. Every genre has secret
+console preferences (Excellent/Poor lists), and every platform grades your
+<b>target audience</b>. Below: all 88 platforms with their audience grades.</div>
 
-<div class="step"><div class="icon">📣</div><div>
-<h3>Hype from marketing</h3>
-<p>Campaigns and a good marketing manager add a one-time hype spike on top of your
-monthly units — capped by platform size. Retained players (online games) keep paying
-a monthly fee if your servers can handle the load.</p>
-</div></div>
+<p><span class="g e">E</span> Excellent ×1.10 · <span class="g g">G</span> Good ×1.05 ·
+<span class="g o">O</span> OK ×1.00 · <span class="g p">P</span> Poor ×0.85 ·
+<span class="dim">·</span> neutral · Anti-piracy ✔ = protected, ✘ = can be cracked (⅓ sales)</p>
 
-<div class="step"><div class="icon">😱</div><div>
-<h3>Bad things that hurt</h3>
-<ul>
-<li><b>Piracy:</b> a cracked game sells ⅓ of what it should.</li>
-<li><b>Fan loss:</b> if your score is below what your fans expect, you literally
-<b>lose fans every month</b> — a flop on a big fanbase bleeds hard.</li>
-<li><b>Engine royalties:</b> using someone else's engine cuts your income.</li>
-<li><b>Taxes</b> take their cut every month — an accountant employee reduces them.</li>
-</ul>
-</div></div>
-
-<h2><span class="num">5</span>Platforms are NOT genre-neutral</h2>
-
-<div class="warnbox">⚠️ <b>Myth buster:</b> platforms do <b>not</b> treat all genres the same.
-Every genre in the game has a secret list of consoles it works great on — and a list of
-consoles where it performs poorly. A handheld-focused genre on a home console (or vice versa)
-silently costs score.</div>
-
-<p>While picking your genre, the game checks your genre against the chosen platform.
-The platform has an <b>audience profile</b> — and your target audience gets graded against it:</p>
-
-<table>
-<thead><tr><th>Audience</th><th>Platforms where it's EXCELLENT (×1.10)</th><th>Platforms where it's POOR (×0.85)</th></tr></thead>
-<tbody>
-__AUDIENCE_ROWS__
-</tbody></table>
-
-<div class="tip">💡 <b>How to use this:</b> when a new console launches, check who it's for.
-Early handhelds and kid consoles love <b>young</b>-focused games. Mid-era home consoles
-are the home of <b>all-audiences</b> hits. Consoles with an adult image (many later-gen
-and PC/OS platforms) reward <b>mature</b> games. Handhelds in particular usually
-<span class="cap bad2">penalize mature games</span> — keep your gore on the home consoles.</div>
-
-<div class="goodbox">✅ <b>Every genre has console preferences.</b> For example, the
-Action genre is EXCELLENT on classic home consoles and handhelds of its era, but POOR
-on a specific list of portables and mini-consoles. When you pick a genre, the game's
-own match tips will show you the grade for the platform you've chosen — a green
-"Excellent" there is real, coded information, not flavor text.</div>
-
-<h2><span class="num">6</span>Console development &amp; ports</h2>
-
-<div class="steps">
-<div class="step"><div class="icon">📜</div><div>
-<h3>Licensing costs money upfront</h3>
-<p>Every console needs a <b>license</b> before you can develop for it — from about
-<b>1,000</b> for ancient gen-1 machines up to <b>4,000,000</b> for the latest generation
-(median around 25,000). Budget for it; the game literally checks your wallet and marks
-consoles as "too expensive" if you can't afford the license.</p>
-</div></div>
-
-<div class="step"><div class="icon">🎮</div><div>
-<h3>Newer console = bigger point requirement</h3>
-<p>The harder the platform (CPU/GPU power), the more <b>capacity points</b> your game
-needs to score well on it. A game that scored 80 on a gen-3 machine might be underwater
-on a gen-8 machine if it doesn't have the points to match. When your game starts falling
-behind the platform's expectations, its score caps out lower.</p>
-</div></div>
-
-<div class="step"><div class="icon">📦</div><div>
-<h3>Ports: cheaper than a new game, but not free</h3>
-<p>Porting a released game to another platform re-uses your original capacity points,
-scaled by <b>how far the target platform is from the original</b>:</p>
-<ul>
-<li><b>Backwards-compatible target</b> (e.g. porting to the console that plays the
-original's discs): only <b>~25%</b> extra points needed — nearly free.</li>
-<li><b>Same generation, same type:</b> ~37% extra · <b>same gen, different type:</b> ~44%.</li>
-<li><b>Next generation:</b> ~48–51% extra points required.</li>
-</ul>
-<p>The port's score also gets re-graded for the new platform — genre↔platform and
-audience↔platform matches are re-checked, so a port can score <b>better or worse</b>
-than the original.</p>
-</div></div>
-
-<div class="step"><div class="icon">🛡️</div><div>
-<h3>Piracy &amp; copy protection</h3>
-<p>Older consoles have no copy protection — your games there can get <b>cracked</b>,
-and a cracked game sells one-third of what it should. Later platforms and custom
-platforms (where you control <code>copy_protection</code>) protect your income.
-When choosing platforms for a big release, unprotected early-era platforms are a
-sales gamble.</p>
-</div></div>
-
-<div class="step"><div class="icon">🌐</div><div>
-<h3>Online-capable platforms</h3>
-<p>40 of the 88 platforms support online. Online enables digital-store sales,
-online-game modes with monthly-subscription income — but also server costs and
-capacity limits. On offline-only platforms (all retro consoles), it's physical sales only.</p>
-</div></div>
+<div class="matrixwrap">
+<table class="matrix" id="plat_table" style="font-size:13px">
+__PLATFORM_TABLE__
+</table>
 </div>
 
-<div class="tip">💡 <b>Console strategy in one line:</b> license early-era consoles
-while they're cheap and their libraries are small (less competition per platform —
-sales are shared among every game released there), then move your studio to each new
-generation as it launches, re-porting your best back-catalog titles to
-backwards-compatible machines for cheap wins.</div>
-
-<h2><span class="num">7</span>The golden rules</h2>
-<div class="tip">1️⃣ <b>Check the match tips before starting</b> — Excellent genre/platform/theme pairings are free score.</div>
-<div class="tip">2️⃣ <b>Follow the genre's shopping list above</b> — balanced allocation beats dumping everything into one slider.</div>
-<div class="tip">3️⃣ <b>Ship on time</b> — the last weeks of overtime cost more than they give.</div>
-<div class="tip">4️⃣ <b>Never back-to-back the same combo</b> — alternate themes or wait it out.</div>
-<div class="tip">5️⃣ <b>Grow into sizes</b> — a Big game with 20k fans will flop; fanbase gates sales harder than score does.</div>
-<div class="tip">6️⃣ <b>A 5-point review difference is huge</b> — near release, one more polish week often pays for itself.</div>
+<div class="tip">💡 <b>Console strategy:</b> license old consoles while cheap — fewer
+competing games means a bigger sales share. Move to each new generation early
+(harder platforms demand more capacity points). Port your back catalog to
+backwards-compatible machines (~25% extra points = nearly free money). Keep mature
+games off handhelds; they almost universally penalize them.</div>
 
 <footer>
-Made for players — every number verified from the game's actual code (see the technical
-report <i>scoring-engine-report.html</i> for formulas and sources).
+Every number verified from the game's actual code. Technical companion:
+<i>scoring-engine-report.html</i>. Generated once from extracted data;
+now maintained directly as HTML.
 </footer>
 </div>
 <script>
-function filterRows(){
-  const q=document.getElementById('gsearch').value.toLowerCase();
-  document.querySelectorAll('#genretable tbody tr').forEach(tr=>{
+function filterTable(inputId, tableId){
+  const q=document.getElementById(inputId).value.toLowerCase();
+  document.querySelectorAll('#'+tableId+' tbody tr').forEach(tr=>{
     tr.style.display=tr.textContent.toLowerCase().includes(q)?'':'none';
   });
 }
@@ -369,10 +277,6 @@ function filterRows(){
 </body></html>
 """
 
-HTML = HTML.replace("__GENRE_ROWS__", genre_rows)
-HTML = HTML.replace("__AUDIENCE_ROWS__", audience_rows)
-# fix a couple of CSS typos from templating
-HTML = HTML.replace("--line:#2c3document:0;", "--line:#2c3a5e;")
-HTML = HTML.replace("border:1px solid #2a3document;", "border:1px solid #2a3a5e;")
+HTML = HTML.replace("__GENRE_MATRIX__", genre_matrix).replace("__PLATFORM_TABLE__", platform_table)
 open("docs/player-guide.html", "w", encoding="utf-8").write(HTML)
 print("written docs/player-guide.html", len(HTML), "bytes")
