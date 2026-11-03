@@ -34,6 +34,29 @@ for gname, g in gt.items():
     rows.append(f'<tr><th>{pretty(gname)}</th><td>{chips}</td><td class="num">{cost}</td></tr>')
 genre_rows = "\n".join(rows)
 
+# build platform/audience tables from game-platform.json
+pl_raw = json.load(open("extracted/game-platform.json"))["list"]
+aud_rows = []
+for aud, label, desc in [
+    ("young", "👶 Young", "Kid-friendly / family audiences"),
+    ("all", "👨‍👩‍👧 All", "General audiences"),
+    ("mature", "🔞 Mature", "Adult / violent themes"),
+]:
+    ex = sorted(p["name"] for p in pl_raw.values() if aud in (p.get("match", {}).get("excellent") or []))
+    po = sorted(p["name"] for p in pl_raw.values() if aud in (p.get("match", {}).get("poor") or []))
+    ex_html = " ".join(f'<span class="cap good2">{n}</span>' for n in ex[:12]) + (
+        f' <span class="dim">+{len(ex)-12} more</span>' if len(ex) > 12 else "")
+    po_html = " ".join(f'<span class="cap bad2">{n}</span>' for n in po[:12]) + (
+        f' <span class="dim">+{len(po)-12} more</span>' if len(po) > 12 else "")
+    aud_rows.append(
+        f'<tr><th>{label}<br><span class="dim" style="font-weight:400">{desc}</span></th>'
+        f'<td>{ex_html or "—"}</td><td>{po_html or "—"}</td></tr>')
+audience_rows = "\n".join(aud_rows)
+
+# console-families quick reference: best platforms for mature vs young
+handhelds_love_young = sorted(p["name"] for p in pl_raw.values()
+                              if p.get("type") == "handled" and "young" in (p.get("match", {}).get("excellent") or []))[:8]
+
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -76,6 +99,8 @@ tbody tr:hover{background:#233052}
 .cap{display:inline-block;background:#24365c;color:#bcd8ff;border-radius:16px;
      padding:2px 10px;margin:2px;font-size:13px}
 .cap b{color:#fff}
+.good2{background:#1a4a2e;color:#8ff0b6}
+.bad2{background:#4a2222;color:#ff9d9d}
 .bars{margin:6px 0}
 .bar-row{display:flex;align-items:center;gap:10px;margin:5px 0}
 .bar-row .lbl{width:130px;flex:0 0 auto;font-size:14px}
@@ -235,7 +260,92 @@ a monthly fee if your servers can handle the load.</p>
 </ul>
 </div></div>
 
-<h2><span class="num">5</span>The golden rules</h2>
+<h2><span class="num">5</span>Platforms are NOT genre-neutral</h2>
+
+<div class="warnbox">⚠️ <b>Myth buster:</b> platforms do <b>not</b> treat all genres the same.
+Every genre in the game has a secret list of consoles it works great on — and a list of
+consoles where it performs poorly. A handheld-focused genre on a home console (or vice versa)
+silently costs score.</div>
+
+<p>While picking your genre, the game checks your genre against the chosen platform.
+The platform has an <b>audience profile</b> — and your target audience gets graded against it:</p>
+
+<table>
+<thead><tr><th>Audience</th><th>Platforms where it's EXCELLENT (×1.10)</th><th>Platforms where it's POOR (×0.85)</th></tr></thead>
+<tbody>
+__AUDIENCE_ROWS__
+</tbody></table>
+
+<div class="tip">💡 <b>How to use this:</b> when a new console launches, check who it's for.
+Early handhelds and kid consoles love <b>young</b>-focused games. Mid-era home consoles
+are the home of <b>all-audiences</b> hits. Consoles with an adult image (many later-gen
+and PC/OS platforms) reward <b>mature</b> games. Handhelds in particular usually
+<span class="cap bad2">penalize mature games</span> — keep your gore on the home consoles.</div>
+
+<div class="goodbox">✅ <b>Every genre has console preferences.</b> For example, the
+Action genre is EXCELLENT on classic home consoles and handhelds of its era, but POOR
+on a specific list of portables and mini-consoles. When you pick a genre, the game's
+own match tips will show you the grade for the platform you've chosen — a green
+"Excellent" there is real, coded information, not flavor text.</div>
+
+<h2><span class="num">6</span>Console development &amp; ports</h2>
+
+<div class="steps">
+<div class="step"><div class="icon">📜</div><div>
+<h3>Licensing costs money upfront</h3>
+<p>Every console needs a <b>license</b> before you can develop for it — from about
+<b>1,000</b> for ancient gen-1 machines up to <b>4,000,000</b> for the latest generation
+(median around 25,000). Budget for it; the game literally checks your wallet and marks
+consoles as "too expensive" if you can't afford the license.</p>
+</div></div>
+
+<div class="step"><div class="icon">🎮</div><div>
+<h3>Newer console = bigger point requirement</h3>
+<p>The harder the platform (CPU/GPU power), the more <b>capacity points</b> your game
+needs to score well on it. A game that scored 80 on a gen-3 machine might be underwater
+on a gen-8 machine if it doesn't have the points to match. When your game starts falling
+behind the platform's expectations, its score caps out lower.</p>
+</div></div>
+
+<div class="step"><div class="icon">📦</div><div>
+<h3>Ports: cheaper than a new game, but not free</h3>
+<p>Porting a released game to another platform re-uses your original capacity points,
+scaled by <b>how far the target platform is from the original</b>:</p>
+<ul>
+<li><b>Backwards-compatible target</b> (e.g. porting to the console that plays the
+original's discs): only <b>~25%</b> extra points needed — nearly free.</li>
+<li><b>Same generation, same type:</b> ~37% extra · <b>same gen, different type:</b> ~44%.</li>
+<li><b>Next generation:</b> ~48–51% extra points required.</li>
+</ul>
+<p>The port's score also gets re-graded for the new platform — genre↔platform and
+audience↔platform matches are re-checked, so a port can score <b>better or worse</b>
+than the original.</p>
+</div></div>
+
+<div class="step"><div class="icon">🛡️</div><div>
+<h3>Piracy &amp; copy protection</h3>
+<p>Older consoles have no copy protection — your games there can get <b>cracked</b>,
+and a cracked game sells one-third of what it should. Later platforms and custom
+platforms (where you control <code>copy_protection</code>) protect your income.
+When choosing platforms for a big release, unprotected early-era platforms are a
+sales gamble.</p>
+</div></div>
+
+<div class="step"><div class="icon">🌐</div><div>
+<h3>Online-capable platforms</h3>
+<p>40 of the 88 platforms support online. Online enables digital-store sales,
+online-game modes with monthly-subscription income — but also server costs and
+capacity limits. On offline-only platforms (all retro consoles), it's physical sales only.</p>
+</div></div>
+</div>
+
+<div class="tip">💡 <b>Console strategy in one line:</b> license early-era consoles
+while they're cheap and their libraries are small (less competition per platform —
+sales are shared among every game released there), then move your studio to each new
+generation as it launches, re-porting your best back-catalog titles to
+backwards-compatible machines for cheap wins.</div>
+
+<h2><span class="num">7</span>The golden rules</h2>
 <div class="tip">1️⃣ <b>Check the match tips before starting</b> — Excellent genre/platform/theme pairings are free score.</div>
 <div class="tip">2️⃣ <b>Follow the genre's shopping list above</b> — balanced allocation beats dumping everything into one slider.</div>
 <div class="tip">3️⃣ <b>Ship on time</b> — the last weeks of overtime cost more than they give.</div>
@@ -260,6 +370,7 @@ function filterRows(){
 """
 
 HTML = HTML.replace("__GENRE_ROWS__", genre_rows)
+HTML = HTML.replace("__AUDIENCE_ROWS__", audience_rows)
 # fix a couple of CSS typos from templating
 HTML = HTML.replace("--line:#2c3document:0;", "--line:#2c3a5e;")
 HTML = HTML.replace("border:1px solid #2a3document;", "border:1px solid #2a3a5e;")
