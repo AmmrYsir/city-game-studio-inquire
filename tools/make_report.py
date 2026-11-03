@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""Generate docs/scoring-engine-report.html from extracted data."""
+import json
+
+genre_rows = open("extracted/_genre_matrix_rows.html", encoding="utf-8").read()
+genre_thead = open("extracted/_genre_matrix_thead.html", encoding="utf-8").read()
+
+HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>City Game Studio - Scoring Engine &amp; Sales Model</title>
+<style>
+:root{
+  --bg:#0f1420; --panel:#171e2e; --ink:#dbe4f5; --dim:#8494b3;
+  --accent:#4fc3f7; --line:#26314d;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 "Segoe UI",system-ui,sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 24px 80px}
+h1{font-size:28px;margin:0 0 4px;color:#fff}
+h1 small{display:block;font-weight:400;font-size:14px;color:var(--dim)}
+h2{margin:44px 0 10px;font-size:21px;color:var(--accent);border-bottom:1px solid #24406b;padding-bottom:6px}
+h3{margin:26px 0 8px;font-size:16px;color:#fff}
+p,li{color:var(--ink)}
+.dim{color:var(--dim)}
+code,.mono{font-family:Consolas,Menlo,monospace;font-size:13px;background:#0c111d;border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#9fd0ff}
+pre{background:#0c111d;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;font:13px/1.5 Consolas,Menlo,monospace;color:#c9e2ff}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}
+th,td{border:1px solid #263049;padding:7px 10px;text-align:left;vertical-align:top}
+thead th{background:#1b2444;color:#bcd3f5}
+tbody tr:nth-child(even){background:#151c2c}
+tbody th{background:#141b2b;color:#fff;text-align:left;white-space:nowrap}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.pill{display:inline-block;border-radius:20px;padding:1px 9px;font-size:12px;font-weight:600}
+.pill.good{background:#173b2b;color:#7fe0ae}.pill.warn{background:#3d3115;color:#ffd479}.pill.bad{background:#3d1c1c;color:#ff9d9d}
+.tag{background:#15293f;color:#7fc4ff;border-radius:4px;padding:1px 6px;font-size:12px}
+.step{display:flex;gap:12px;margin:10px 0}
+.step .n{flex:0 0 28px;height:28px;border-radius:50%;background:#2456a0;color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 20px;margin:14px 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.formula{color:#aef0b7}
+.matrix{font-size:11.5px}
+.matrix td,.matrix th{padding:3px 6px;text-align:center}
+.matrix tbody th{text-align:left;font-weight:600}
+.hv{display:inline-block;min-width:34px;padding:2px 4px;border-radius:4px;color:#eaf4ff;
+    background:rgb(42,111,181);opacity:calc(0.15 + var(--v)*0.0085)}
+.rot{height:92px;white-space:nowrap}
+.rot div{transform:rotate(-55deg) translate(6px,-2px);transform-origin:bottom left;width:14px}
+.leg{display:inline-block;width:60px;height:12px;border-radius:3px;margin:0 4px -1px 0;
+     background:linear-gradient(90deg,#14203a,#2a6fb5)}
+footer{margin-top:60px;color:var(--dim);font-size:12.5px;border-top:1px solid var(--line);padding-top:12px}
+.note{background:#24211a;border:1px solid #4d431f;border-radius:8px;padding:10px 14px;color:#ffd479;font-size:13.5px}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>City Game Studio - Scoring Engine &amp; Sales Model
+<small>Extracted from the game's compiled GDScript (Godot 2.1 bytecode, AES-decrypted). Values are exact constants from the shipped game.</small></h1>
+
+<div class="card">
+<b>How a game's review score is computed</b> - when development finishes, the game's
+capacity points are compared against genre expectations, then multiplied through
+theme/platform matching, duration, platform library, and idea-repetition factors,
+and finally split into 4 magazine notes with &plusmn;10% randomness. The resulting
+<code>computed_note</code> then drives monthly sales, fanbase and awards.
+</div>
+
+<h2>1 &middot; The scoring pipeline</h2>
+
+<div class="step"><div class="n">1</div><div>
+<b>Engine penalty &rarr; max_note cap.</b> Each game size has a hard cap
+(<span class="tag">indie 85 &middot; normal 90 &middot; big 95 &middot; aaa 100</span>). A too-heavy
+custom engine for the platform lowers this cap:
+<pre class="formula">note_ratio = clamp( size_ratio &times; (1 &minus; used_gpu_cpu / required_gpu_cpu), &minus;size_ratio/4, size_ratio )
+max_note   = size.max_note &minus; note_ratio</pre>
+Too heavy (ratio &gt; 1.5) triggers a negative review comment; very light (&lt; 0.5) a positive one.
+</div></div>
+
+<div class="step"><div class="n">2</div><div>
+<b>Capacity-point scoring (the core).</b> The three dev phases - <i>design, development, polish</i> -
+are each scored out of <b>28 points</b> (max total 84). For every capacity in a phase:
+<pre class="formula">note_per_item = 28 / (#capacities in phase)
+expected      = genre expectation value (matrix below)   &larr; per genre, phase &amp; capacity
+game_share    = your_points[key] / &Sigma; your_points_in_phase
+expected_share= expected[key]    / &Sigma; expected_in_phase
+delta         = |expected_share &minus; game_share| &times; capacity_delta_time   (difficulty: 1.085&ndash;1.667)
+note          = note_per_item &times; (expected_share &minus; clamp(delta, 0, expected_share)) / expected_share</pre>
+Then a <b>rebalance multiplier</b> compares each capacity's share vs expectation:
+<pre class="formula">ratio = clamp(0.1 + share_you / share_expected, &hellip;)
+note &times;= lerp(0.5, 1.0, ratio)</pre>
+Review comments: |your &minus; expected| &gt; 20 &rarr; <span class="pill bad">&ldquo;too much X&rdquo;</span>;
+&le; 5 &rarr; <span class="pill good">&ldquo;good X&rdquo;</span>; share ratio &le; 0.6 &rarr; <span class="pill bad">&ldquo;not enough&rdquo;</span>;
+&ge; 0.8 &rarr; <span class="pill good">&ldquo;good&rdquo;</span>.
+</div></div>
+
+<div class="step"><div class="n">3</div><div>
+<b>Required points baseline.</b> Points needed to &ldquo;fill the gauge&rdquo; per size:
+<pre class="formula">points = ideal_weeks &times; staff &times; 0.4671 &times; week_productivity &times; productivity &times; point_to_produce_ratio
+productivity = 1.15 if a producer is required, else 1.0 &middot; point_to_produce_ratio: 0.2826 (easy) &hellip; 3.0 (hard)</pre>
+</div></div>
+
+<div class="step"><div class="n">4</div><div>
+<b>Theme / genre / platform / audience match multipliers.</b> Three independent
+match lookups multiply the note (<b>POOR 0.85 &middot; OK 1.00 &middot; GOOD 1.05 &middot; EXCELLENT 1.10</b>):
+genre&harr;platform preferred genres, theme&harr;genre, platform&harr;target audience.
+</div></div>
+
+<div class="step"><div class="n">5</div><div>
+<b>Duration factor</b> (contributes up to <b>20 points</b>, min 5):
+<pre class="formula">note = weeks &times; 20 / min_weeks
+if weeks &gt; max_weeks: note = 20 &minus; (weeks &minus; max_weeks) &times; 20 / min_weeks
+duration_note = clamp(note, 5, 20);  note &times;= duration_note / 20</pre>
+</div></div>
+
+<div class="step"><div class="n">6</div><div>
+<b>Platform library.</b> Your total points are compared to the best same-size,
+same-genre game already on the platform (floored at your own baseline):
+<pre class="formula">note_ratio = clamp(your_points / rival_points, capacity_min_ratio, max_bonus)
+absolute_note &times;= lerp(size.platform_note_min_ratio, 1.0, note_ratio)</pre>
+</div></div>
+
+<div class="step"><div class="n">7</div><div>
+<b>Idea repetition.</b> Same theme+genre combo within the cooldown window
+(<span class="tag">6 / 8 / 12 months by difficulty</span>) scales the note:
+<pre class="formula">absolute_note &times;= clamp(months_since / min_delay, 0.75, 1.0)</pre>
+</div></div>
+
+<div class="step"><div class="n">8</div><div>
+<b>Magazine split.</b> 4 magazines, each <span class="mono">&plusmn;10%</span> random jitter;
+notes above 100 are floored to multiples of 10. Final score = mean of the 4.
+<pre class="formula">for i in 4: note[i] = int(absolute_note &times; rand(0.9, 1.1));  if &gt;100: note -= note % 10
+computed_note = int(mean(notes))</pre>
+</div></div>
+
+<h2>2 &middot; Game size matrix</h2>
+<p>The single most important table: everything scales with the chosen size.</p>
+<table>
+<thead><tr><th>Size</th><th class="num">Staff</th><th class="num">Producer</th><th class="num">Fanbase req.</th>
+<th class="num">Weeks (min&ndash;max)</th><th class="num">Cost/week</th><th class="num">Max note</th><th class="num">Max sales</th>
+<th class="num">Price avg/max/limit</th><th class="num">note^pow</th><th class="num">fan_gain</th><th class="num">retention</th></tr></thead>
+<tbody>
+<tr><th>Indie</th><td class="num">1</td><td class="num">&ndash;</td><td class="num">1 000</td><td class="num">12&ndash;24</td><td class="num">300</td><td class="num">85</td><td class="num">100 000</td><td class="num">10 / 15 / 20</td><td class="num">7.5</td><td class="num">0.008</td><td class="num">0.191</td></tr>
+<tr><th>Normal</th><td class="num">5</td><td class="num">&ndash;</td><td class="num">10 000</td><td class="num">24&ndash;56</td><td class="num">5 000</td><td class="num">90</td><td class="num">500 000</td><td class="num">20 / 35 / 50</td><td class="num">11.5</td><td class="num">0.010</td><td class="num">0.217</td></tr>
+<tr><th>Big</th><td class="num">25</td><td class="num">&#10003;</td><td class="num">50 000</td><td class="num">48&ndash;96</td><td class="num">25 000</td><td class="num">95</td><td class="num">2 500 000</td><td class="num">40 / 60 / 80</td><td class="num">12.5</td><td class="num">0.0125</td><td class="num">0.233</td></tr>
+<tr><th>AAA</th><td class="num">100</td><td class="num">&#10003;</td><td class="num">100 000</td><td class="num">72&ndash;144</td><td class="num">50 000</td><td class="num">100</td><td class="num">10 000 000</td><td class="num">60 / 80 / 120</td><td class="num">14</td><td class="num">0.0156</td><td class="num">0.433</td></tr>
+</tbody></table>
+<p class="dim">Also per size: extra-week cost factor 6/4/2/1.5 &middot; extra-week efficiency 0.75&ndash;0.9 &middot;
+platform_note_min_ratio 0.5/0.3/0.2/0.15 &middot; sales &ldquo;times&rdquo; 4/8/16/32 &middot; contract ratio 4/6/9/12 &middot;
+XP ratio 0.015&rarr;0.152 &middot; remake_review_ease 10/20/40/80.</p>
+
+<h3>Marketing campaigns (per size)</h3>
+<table>
+<thead><tr><th>Campaign</th><th class="num">Ratio</th><th class="num">Indie</th><th class="num">Normal</th><th class="num">Big</th><th class="num">AAA</th></tr></thead>
+<tbody>
+<tr><th>No cost</th><td class="num">1.05</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+<tr><th>Demo</th><td class="num">1.9</td><td class="num">50 000</td><td class="num">125 000</td><td class="num">250 000</td><td class="num">500 000</td></tr>
+<tr><th>Full</th><td class="num">3.8</td><td class="num">350 000</td><td class="num">900 000</td><td class="num">2 000 000</td><td class="num">5 000 000</td></tr>
+</tbody></table>
+<p class="dim">Marketing duration (weeks): 12 / 16 / 32 / 64. The campaign ratio feeds the hype bonus in the sales model.</p>
+
+<h2>3 &middot; Genre expectation matrix</h2>
+<p class="dim">64 genres &times; 15 capacities. These <code>expected</code> values are what
+step 2 compares your allocation against - matching the distribution scores higher
+than dumping points everywhere. Weight = research weight, Cost = unlock cost in research points.</p>
+<p><span class="leg"></span>darker = more points expected &middot; <span class="dim">&ndash; = capacity not used by this genre</span></p>
+<table class="matrix">
+<thead><tr>__GENRE_HEAD__</tr></thead>
+<tbody>
+__GENRE_ROWS__
+</tbody></table>
+
+<h2>4 &middot; Match multipliers</h2>
+<div class="grid2"><div class="card">
+<h3>Match grades</h3>
+<table><thead><tr><th>Grade</th><th class="num">Multiplier</th></tr></thead>
+<tbody>
+<tr><td><span class="pill good">EXCELLENT</span></td><td class="num">1.10</td></tr>
+<tr><td><span class="pill good">GOOD</span></td><td class="num">1.05</td></tr>
+<tr><td><span class="pill warn">OK</span></td><td class="num">1.00</td></tr>
+<tr><td><span class="pill bad">POOR</span></td><td class="num">0.85</td></tr>
+</tbody></table>
+<p class="dim">Three lookups per game: genre list vs platform, theme vs genre list,
+platform vs target audience. Each genre/theme/platform defines
+<code>excellent / good / poor / ok</code> membership lists (see data/game-type.gd,
+data/game-theme.gd, data/game-platform.gd in the decompiled workspace).</p>
+</div><div class="card">
+<h3>Difficulty scalars (notation)</h3>
+<table><thead><tr><th>Setting</th><th class="num">Easy</th><th class="num">Normal</th><th class="num">Hard</th></tr></thead>
+<tbody>
+<tr><td>point_to_produce_ratio</td><td class="num">0.2826</td><td class="num">0.3526</td><td class="num">0.4078</td></tr>
+<tr><td>capacity_min_ratio</td><td class="num">0.80</td><td class="num">0.75</td><td class="num">0.70</td></tr>
+<tr><td>max_bonus (platform)</td><td class="num">1.05</td><td class="num">1.05</td><td class="num">1.034</td></tr>
+<tr><td>min_delay (combo, months)</td><td class="num">6</td><td class="num">8</td><td class="num">12</td></tr>
+<tr><td>capacity_delta_time</td><td class="num">1.085</td><td class="num">1.117</td><td class="num">1.334</td></tr>
+</tbody></table>
+<p class="dim">From <code>data/player.gd</code> difficulty blocks (the pattern continues beyond hard: delta 1.667, point ratio 3.0 at the highest).</p>
+</div></div>
+
+<h2>5 &middot; Monthly sales model</h2>
+<p>Runs every in-game month for every published game (own, indie/contract, remake, port, DLC).</p>
+
+<div class="step"><div class="n">A</div><div>
+<b>Base pool.</b> Platform userbase, discounted by how long the game has been on the
+market and how many games compete on the platform:
+<pre class="formula">cycle_ratio   = (adjusted_cycle &minus; 2) / (adjusted_cycle + 2)      &larr; ramps up, saturates at 1
+max_unit_sold = platform_userbase &times; cycle_ratio
+competing     = min(1, size.sales.times &times; (#games_on_platform ^ 1.1))   &larr; pow_factor 1.1
+
+base_pool = clamp(max_unit_sold, max_sales) &times; (theme_trend / 50)
+saturation = 1 &minus; 1/(1 + sqrt(base_pool)/competing)</pre>
+</div></div>
+
+<div class="step"><div class="n">B</div><div>
+<b>Review-note shaping.</b> The score enters sales as a power curve - this is why
+an 85 is dramatically better than a 70:
+<pre class="formula">note = min(0.25, computed_note / 100) ^ size.note_pow_factor      &larr; 7.5 (indie) &hellip; 14 (aaa)</pre>
+</div></div>
+
+<div class="step"><div class="n">C</div><div>
+<b>Fanbase input.</b>
+<pre class="formula">fan_ratio = (fanbase / (cycle + 1)) &times; size.fan_ratio        &larr; 0.55 &hellip; 1.1
+fanbase_gate = clamp((fanbase + 1) / required_fanbase, fan_min_ratio, 1.0)
+required_fanbase grows by (1 + score_diff) when the game underperforms its threshold (95/95/90/90)</pre>
+</div></div>
+
+<div class="step"><div class="n">D</div><div>
+<b>Combine:</b>
+<pre class="formula">unit_sold = (base_pool &times; saturation + fan_ratio) &times; note
+unit_sold = unit_sold / (cycle + cycle_boost) &times; price_ratio &times; fanbase_gate &times; sales_ratio / discount_ratio</pre>
+<b>Price ratio</b> (sell cheap &rarr; volume):
+<pre class="formula">r = price / size.price.max
+ratio = max_price/price if r &lt; 1 else size.price.malus &times; size.price.limit / price</pre>
+<b>Hype/marketing add-on</b> (retained users &times; sell-bonus &times; 10, plus campaign ratio &times;
+last month's units, &times; marketing-manager employee bonus), clamped to platform size, added to units.
+</div></div>
+
+<div class="step"><div class="n">E</div><div>
+<b>Retention &amp; online games.</b> Repeat customers decay logarithmically:
+<pre class="formula">retained = last_units &times; max_retention &times; note / (log(cycle + 10) + cycle_boost) &times; retention_ratio</pre>
+Online games charge <span class="mono">retained &times; monthly_price</span> per month; server capacity caps income.
+</div></div>
+
+<div class="step"><div class="n">F</div><div>
+<b>Income waterfall</b> (deductions in order):
+<pre class="formula">income = ceil(units &times; price &times; (1 &minus; publisher_royalty%))
+       + online sub income + DLC/purchase income
+&minus; concurrent/publisher royalty  &minus; engine royalties (if engine not owned)
+&minus; studio-director profit bonus  &minus; taxes ((taxes_ratio + state_taxes) &times; accountant bonus)</pre>
+<b>Piracy:</b> if the game gets cracked, units / DS units / retention / fanbase-gain &divide; <b>3</b>.
+</div></div>
+
+<div class="step"><div class="n">G</div><div>
+<b>Fanbase gain/loss.</b>
+<pre class="formula">threshold = clamp(fanbase / fanbase_ctrl_threshold, 0.5, 1) &times; 100
+gain = units &times; (computed_note &minus; threshold)/100 &times; size.fan_gain
+if gain &lt; 0: gain = min(fanbase &times; (note &minus; threshold)/500, units &times; &minus;2.5)   &larr; fans leave</pre>
+Below-expectation games actively bleed fans.
+</div></div>
+
+<div class="step"><div class="n">H</div><div>
+<b>DLC.</b> Attach-rate ratio shrinks as more DLCs pile up:
+<pre class="formula">attach_ratio = 1 + 2(n_dlc &minus; 1)&sup2; / (n_dlc + 1)
+units = base-game attach &times; attach_rate / (100 &times; attach_ratio); income = units &times; dlc_price</pre>
+</div></div>
+
+<h2>6 &middot; Cheat-sheet: what actually moves the needle</h2>
+<div class="card"><ul>
+<li><b>Match the genre matrix</b> - allocation distribution is scored, not volume. The rebalance multiplier can halve your capacity note (lerp 0.5).</li>
+<li><b>Don't overrun duration</b> - past max weeks every extra week linearly eats the 20-point duration bonus.</li>
+<li><b>Don't repeat combos</b> - same theme+genre within 6&ndash;12 months costs up to 25% of the score.</li>
+<li><b>85 vs 70 matters enormously</b> - note^7.5&hellip;14 power curve means a 5-point note difference swings sales by tens of percent.</li>
+<li><b>Price at max is punishing</b> - above average price the malus (0.5&ndash;0.8) &times; limit/price ratio kicks in; cheap prices get a &ge;1.1 volume ratio.</li>
+<li><b>Fanbase gates sales</b> - underperforming self-published games raise their own fanbase requirement (score_diff feedback loop).</li>
+<li><b>AAA cap is 100, indie is 85</b> - engine weight can lower even that cap.</li>
+</ul></div>
+
+<footer>
+Extracted statically from the shipped game files (Godot 2.1 GDScript bytecode, decrypted with the engine's embedded key).
+Sources: scripts/controllers/game.gd, scripts/controllers/game-sales.gd, data/game.gd, data/score.gd, data/game-type.gd, data/player.gd, scripts/utils/match.gd.
+Generated by the city-game-studio research workspace (docs/mechanics/).
+</footer>
+</div></body></html>
+"""
+
+HTML = HTML.replace("__GENRE_HEAD__", genre_thead).replace("__GENRE_ROWS__", genre_rows)
+out = "docs/scoring-engine-report.html"
+open(out, "w", encoding="utf-8").write(HTML)
+print("written", out, len(HTML), "bytes")
